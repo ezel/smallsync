@@ -1,4 +1,4 @@
-module local/smallsync
+module github.com/ezel/smallsync
 
 go 1.25.4
 
