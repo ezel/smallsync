@@ -19,20 +19,22 @@ func main() {
 func initConfig() {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
-	viper.AddConfigPath("$HOME/.config/smallsync")
+
+	var configPath string
+	if home, err := os.UserConfigDir(); err != nil {
+		fmt.Println("cannot find user config directory, use current folder")
+		configPath = "."
+	} else {
+		configPath = filepath.Join(home, "/smallsync/")
+	}
+	
+	viper.AddConfigPath(configPath)
 	viper.AddConfigPath(".")
 
 	if err := viper.ReadInConfig(); err != nil {
-		var configErr *viper.ConfigFileNotFoundError
+		var configErr viper.ConfigFileNotFoundError
 		if errors.As(err, &configErr) {
 			fmt.Println("config file initing...")
-			var configPath string
-			if home, err := os.UserHomeDir(); err != nil {
-				fmt.Println("cannot create config file at $HOME/.config/smallsync/")
-				configPath = "."
-			} else {
-				configPath = filepath.Join(home, "/.config/smallsync/")
-			}
 			configFilepath := filepath.Join(configPath, "config.yaml")
 			if err := os.MkdirAll(configPath, 0755); err != nil {
 				panic("create dir error")
@@ -57,7 +59,7 @@ func initCommand() {
 				Name:  "test",
 				Usage: "test the server",
 				Action: func(context.Context, *cli.Command) error {
-					fmt.Println("test server:", cmdTestServer())
+					cmdTestServer()
 					return nil
 				},
 			},
@@ -171,7 +173,6 @@ func cmdTestServer() bool {
 
 	info, _ := c.Stat("/")
 	fmt.Println(info)
-
 	return true
 }
 
