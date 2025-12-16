@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/spf13/viper"
 	"github.com/studio-b12/gowebdav"
@@ -22,26 +23,28 @@ func initConfig() {
 	viper.AddConfigPath(".")
 
 	if err := viper.ReadInConfig(); err != nil {
-		fmt.Println("err")
-		fmt.Println(err == viper.ConfigFileNotFoundError{})
-		var configPath string
-		if home, err := os.UserHomeDir(); err != nil {
-			fmt.Println("cannot create config file at $HOME/.config/smallsync/")
-			configPath = "."
-		} else {
-			configPath = filepath.Join(home, "/.config/smallsync/")
+		var configErr *viper.ConfigFileNotFoundError
+		if errors.As(err, &configErr) {
+			fmt.Println("config file initing...")
+			var configPath string
+			if home, err := os.UserHomeDir(); err != nil {
+				fmt.Println("cannot create config file at $HOME/.config/smallsync/")
+				configPath = "."
+			} else {
+				configPath = filepath.Join(home, "/.config/smallsync/")
+			}
+			configFilepath := filepath.Join(configPath, "config.yaml")
+			if err := os.MkdirAll(configPath, 0755); err != nil {
+				panic("create dir error")
+			}
+			file, err := os.Create(configFilepath)
+			if err != nil {
+				panic(err)
+			}
+			viper.SetDefault("remote.type", "webdav")
+			viper.WriteConfigAs(configFilepath)
+			file.Close()
 		}
-		configFilepath := filepath.Join(configPath, "config.yaml")
-		if err := os.MkdirAll(configPath, 0755); err != nil {
-			panic("create dir error")
-		}
-		file, err := os.Create(configFilepath)
-		if err != nil {
-			panic(err)
-		}
-		viper.SetDefault("remote.type", "webdav")
-		viper.WriteConfigAs(configFilepath)
-		file.Close()
 	}
 }
 
@@ -69,9 +72,9 @@ func initCommand() {
 			},
 
 			&cli.Command{
-				Name:  "add",
-				Aliases:  []string{"a"},				
-				Usage: "add a remote/local entry for sync",
+				Name:    "add",
+				Aliases: []string{"a"},
+				Usage:   "add a remote/local entry for sync",
 				Action: func(context.Context, *cli.Command) error {
 					cmdAddEntry()
 					return nil
@@ -79,9 +82,9 @@ func initCommand() {
 			},
 
 			&cli.Command{
-				Name:  "list",
-				Aliases:  []string{"l"},
-				Usage: "list all the entries",
+				Name:    "list",
+				Aliases: []string{"l"},
+				Usage:   "list all the entries",
 				Action: func(context.Context, *cli.Command) error {
 					cmdListEntry()
 					return nil
@@ -89,32 +92,31 @@ func initCommand() {
 			},
 
 			&cli.Command{
-				Name: "upload",
-				Aliases: []string{"u","up"},
-				Usage: "upload entries",
-				Arguments: []cli.Argument {
+				Name:    "upload",
+				Aliases: []string{"u", "up"},
+				Usage:   "upload entries",
+				Arguments: []cli.Argument{
 					&cli.StringArg{
 						Name: "entry",
 					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					uploadOneEntry(cmd.StringArg("entry"))
+					cmdUpload(cmd.StringArg("entry"))
 					return nil
 				},
 			},
-			
+
 			&cli.Command{
-				Name: "download",
-				Aliases: []string{"d","down"},
-				Usage: "download entries",
-				Arguments: []cli.Argument {
+				Name:    "download",
+				Aliases: []string{"d", "down"},
+				Usage:   "download entries",
+				Arguments: []cli.Argument{
 					&cli.StringArg{
 						Name: "entry",
 					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					// TODO check entry name
-					downloadOneEntry(cmd.StringArg("entry"))
+					cmdDownload(cmd.StringArg("entry"))
 					return nil
 				},
 			},
@@ -202,19 +204,46 @@ func cmdListEntry() {
 
 	entries := entrySub.AllSettings()
 	for name, config := range entries {
-		fmt.Print("Entry[", name,"]: ")
+		fmt.Print("Entry[", name, "]: ")
 		if pair, ok := config.(map[string]any); ok {
-			fmt.Println(pair["local"], "==>", pair["remote"])
+			fmt.Println(pair["local"], "<-->", pair["remote"])
 		}
 	}
 
 }
 
-func downloadOneEntry(entryName string) bool {
-	// check local file exists
-	local := viper.GetString("entry." + entryName + ".local")
-	remote := viper.GetString("entry." + entryName + ".remote")
+func cmdDownload(entryName string) {
+	entrySub := viper.Sub("entry")
+	if entrySub == nil {
+		fmt.Println("no entries, add one now!")
+		cmdAddEntry()
+		return
+	}
 
+	var total, success int
+	entries := entrySub.AllSettings()
+	total = len(entries)
+	for name, config := range entries {
+		if entryName != "" && name != entryName {
+			continue
+		}
+
+		if pair, ok := config.(map[string]any); ok {
+			fmt.Println("download", pair["remote"], "==>", pair["local"])
+			local, _ := pair["local"].(string)
+			remote, _ := pair["remote"].(string)
+			if downloadOneEntry(local, remote, true) {
+				success++
+			}
+		} else {
+			fmt.Printf("entry[%s] error.\n", name)
+		}
+	}
+	fmt.Printf("downloaded %d/%d.\n", success, total)
+}
+
+func downloadOneEntry(local, remote string, needCheck bool) bool {
+	// check local file exists
 	c := gowebdav.NewClient(
 		viper.GetString("remote.webdav.serverPath"),
 		viper.GetString("remote.webdav.username"),
@@ -244,10 +273,37 @@ func downloadOneEntry(entryName string) bool {
 	return false
 }
 
-func uploadOneEntry(entryName string) bool {
-	// check local file exists
-	local := viper.GetString("entry." + entryName + ".local")
-	remote := viper.GetString("entry." + entryName + ".remote")
+func cmdUpload(entryName string) {
+	entrySub := viper.Sub("entry")
+	if entrySub == nil {
+		fmt.Println("no entries, add one now!")
+		cmdAddEntry()
+		return
+	}
+
+	var total, success int
+	entries := entrySub.AllSettings()
+	total = len(entries)
+	for name, config := range entries {
+		if entryName != "" && name != entryName {
+			continue
+		}
+
+		if pair, ok := config.(map[string]any); ok {
+			fmt.Println("upload", pair["local"], "==>", pair["remote"])
+			local, _ := pair["local"].(string)
+			remote, _ := pair["remote"].(string)
+			if uploadOneEntry(local, remote, true) {
+				success++
+			}
+		} else {
+			fmt.Printf("entry[%s] error.\n", name)
+		}
+	}
+	fmt.Printf("uploaded %d/%d.\n", success, total)
+}
+
+func uploadOneEntry(local, remote string, needCheck bool) bool {
 	if info, err := os.Stat(local); err != nil || info == nil {
 		return false
 	}
@@ -256,9 +312,8 @@ func uploadOneEntry(entryName string) bool {
 	fmt.Scanln(&response)
 	if response == "y" || response == "Y" || response == "" {
 		// do upload
-		fmt.Println("do upload")
 		bytes, _ := os.ReadFile(local)
-		
+
 		c := gowebdav.NewClient(
 			viper.GetString("remote.webdav.serverPath"),
 			viper.GetString("remote.webdav.username"),
